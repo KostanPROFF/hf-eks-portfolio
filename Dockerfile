@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm AS build
+FROM python:3.14-slim-bookworm AS build
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 COPY requirements.txt .
@@ -7,7 +7,7 @@ ENV PYTHONPATH=/install/lib/python3.12/site-packages
 COPY scripts/download_model.py .
 RUN python download_model.py
 
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 MODEL_PATH=/opt/model     HF_HOME=/tmp/huggingface TORCH_NUM_THREADS=1
 RUN groupadd --gid 10001 app && useradd --uid 10001 --gid app --no-create-home app
 COPY --from=build /install /usr/local
