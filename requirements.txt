@@ -1,0 +1,5 @@
+fastapi==0.146.0
+uvicorn==0.54.0
+transformers==5.20.1
+prometheus-client==0.26.0
+safetensors==0.8.0

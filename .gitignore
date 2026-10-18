@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.terraform/
+*.tfstate*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+.env*
+!*.env.example
+*.pem
+*.key
+coverage.xml

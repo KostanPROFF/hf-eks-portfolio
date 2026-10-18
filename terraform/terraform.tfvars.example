@@ -1,0 +1,9 @@
+region = "us-west-2"
+name = "hf-eks-demo"
+kubernetes_version = "1.35"
+github_repository = "KostanPROFF/hf-eks-portfolio"
+admin_role_arn = "arn:aws:iam::123456789012:role/YourExistingAdminRole"
+admin_cidrs = ["203.0.113.10/32"] # Replace with YOUR real public IP
+# github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+enable_gpu = false
+enable_load_balancer_controller = false

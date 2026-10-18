@@ -1,0 +1,38 @@
+# Ephemeral demo monitoring: no public endpoints, no EBS CSI dependency.
+grafana:
+  service:
+    type: ClusterIP
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: false
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 256Mi}
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+prometheus:
+  prometheusSpec:
+    retention: 6h
+    retentionSize: 2GB
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests: {cpu: 100m, memory: 512Mi}
+      limits: {memory: 1Gi}
+alertmanager:
+  enabled: false
+# EKS does not expose these control-plane scrape endpoints.
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false

@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inference
+  namespace: inference
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference
+  namespace: inference
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 600
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: {app: inference}
+  template:
+    metadata:
+      labels: {app: inference}
+    spec:
+      serviceAccountName: inference
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      nodeSelector: {workload: cpu}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: inference}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: inference-image
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8000}
+          env:
+            - {name: MODEL_DEVICE, value: '-1'}
+          resources:
+            requests: {cpu: 500m, memory: 768Mi}
+            limits: {cpu: '1', memory: 1536Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ['ALL']}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          startupProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 15
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference
+  namespace: inference
+  labels: {app: inference}
+spec:
+  type: ClusterIP
+  selector: {app: inference}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inference
+  namespace: inference
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: inference}
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 65}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 180
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inference
+  namespace: inference
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: inference}

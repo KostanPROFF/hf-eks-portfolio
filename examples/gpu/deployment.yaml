@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-gpu
+  namespace: inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: inference-gpu}
+  template:
+    metadata:
+      labels: {app: inference-gpu}
+    spec:
+      serviceAccountName: inference
+      automountServiceAccountToken: false
+      nodeSelector: {workload: gpu}
+      tolerations:
+        - {key: nvidia.com/gpu, operator: Equal, value: 'true', effect: NoSchedule}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: GPU_IMAGE_REPLACE_WITH_DIGEST
+          env:
+            - {name: MODEL_DEVICE, value: '0'}
+          ports:
+            - {name: http, containerPort: 8000}
+          resources:
+            requests: {cpu: '1', memory: 2Gi, nvidia.com/gpu: '1'}
+            limits: {cpu: '2', memory: 4Gi, nvidia.com/gpu: '1'}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ['ALL']}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          startupProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}

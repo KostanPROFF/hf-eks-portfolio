@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: github-deployer
+  namespace: inference
+rules:
+  - apiGroups: ['apps']
+    resources: ['deployments']
+    resourceNames: ['inference']
+    verbs: ['get', 'list', 'patch', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: github-deployer
+  namespace: inference
+subjects:
+  - kind: Group
+    name: hf-deployers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: github-deployer
+  apiGroup: rbac.authorization.k8s.io

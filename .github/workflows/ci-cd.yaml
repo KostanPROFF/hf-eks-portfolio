@@ -1,0 +1,98 @@
+name: Test, build and deploy
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: delivery-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - run: ruff check app tests scripts/download_model.py
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with: {terraform_version: '1.12.2'}
+      - run: terraform -chdir=terraform fmt -check -recursive
+      - run: terraform -chdir=terraform init -backend=false
+      - run: terraform -chdir=terraform validate
+      - uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+        with: {version: v1.35.0}
+      - run: kubectl kustomize k8s/base > /tmp/base.yaml
+      - run: kubectl kustomize k8s/overlays/internal-nlb > /tmp/nlb.yaml
+  build:
+    timeout-minutes: 40
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.BUILD_ROLE_ARN != '' && vars.ECR_URL != '' && vars.AWS_REGION != ''
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.BUILD_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and test real model before publishing
+        env:
+          TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          docker build --platform linux/amd64 -t candidate .
+          docker run -d --name inference-test --read-only --tmpfs /tmp:rw,size=128m -p 127.0.0.1:8000:8000 candidate
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health/ready; then break; fi
+            sleep 2
+          done
+          bash scripts/smoke.sh
+          docker stop inference-test
+          docker tag candidate "${{ vars.ECR_URL }}:sha-$TAG"
+          docker push "${{ vars.ECR_URL }}:sha-$TAG"
+      - name: Resolve immutable digest
+        id: image
+        env:
+          TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          ECR_URL: ${{ vars.ECR_URL }}
+        run: |
+          DIGEST=$(aws ecr describe-images --repository-name "${ECR_URL#*/}" --image-ids "imageTag=sha-$TAG" --query 'imageDetails[0].imageDigest' --output text)
+          echo "image=$ECR_URL@$DIGEST" >> "$GITHUB_OUTPUT"
+  deploy:
+    if: vars.DEPLOY_ROLE_ARN != '' && vars.CLUSTER_NAME != ''
+    timeout-minutes: 15
+    needs: build
+    environment: production
+    # Dedicated ephemeral runner in this VPC; never runs pull_request code.
+    runs-on: [self-hosted, linux, x64, eks-vpc]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          unset-current-credentials: true
+      - name: Update image and wait
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          export KUBECONFIG="$RUNNER_TEMP/hf-kubeconfig"
+          trap 'rm -f "$KUBECONFIG"' EXIT
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+          bash scripts/deploy.sh
