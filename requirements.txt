@@ -1,4 +1,4 @@
-fastapi==0.146.0
+fastapi==0.159.1
 uvicorn==0.54.0
 transformers==5.20.1
 prometheus-client==0.26.0
