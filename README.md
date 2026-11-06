@@ -1,15 +1,15 @@
 # Hugging Face → AWS EKS | DevOps portfolio
 
-Практический проект: небольшой inference API, воспроизводимая AWS-инфраструктура,
-CI/CD без постоянных AWS keys и наблюдаемость. Документация на русском, имена и код на английском.
-**Статус:** шаблон для самостоятельного запуска; AWS deploy и live inference не заявляются как выполненные.
-Результаты доступных локальных проверок находятся в [VALIDATION.md](docs/VALIDATION.md).
+A hands-on project: a small inference API, reproducible AWS infrastructure,
+CI/CD without long-lived AWS keys, and observability.
+**Status:** a template for running on your own; AWS deploy and live inference are not claimed as done.
+Results of the local checks that could be run are in [VALIDATION.md](docs/VALIDATION.md).
 
-Модель: [DistilBERT SST-2](https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english),
-около 67 млн параметров, Apache-2.0. Анализ тональности **английского** текста, POSITIVE/NEGATIVE.
-Это учебная модель с ограничениями и смещениями из model card, не универсальный классификатор.
-Revision закреплён полным commit SHA в `scripts/download_model.py`; используются safetensors,
-`trust_remote_code=False`. Веса попадают в образ во время build, runtime offline.
+Model: [DistilBERT SST-2](https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english),
+about 67M parameters, Apache-2.0. Sentiment analysis of **English** text, POSITIVE/NEGATIVE.
+This is a learning model with the limitations and biases described in its model card, not a general-purpose classifier.
+The revision is pinned to a full commit SHA in `scripts/download_model.py`; safetensors are used,
+`trust_remote_code=False`. Weights are baked into the image at build time; runtime is offline.
 
 ```mermaid
 flowchart LR
@@ -29,32 +29,32 @@ flowchart LR
   User[Administrator] -->|restricted API CIDR + port-forward| Pods
 ```
 
-Две CPU-ноды `t3.large`, две private subnet и public subnet с NAT. Control plane управляется AWS.
-Один NAT снижает расходы учебного стенда, но создаёт единую точку отказа egress и межзональный трафик.
-Приложение: 2–4 pod, 500m CPU request, 1 CPU limit, bounded inference queue и один worker на pod.
-HPA использует Metrics Server add-on. **HPA не добавляет EC2-ноды**: max_size группы сам по себе
-не включает autoscaling. Для перегрузки предусмотрен 429; свободную capacity проверяйте отдельно.
+Two `t3.large` CPU nodes, two private subnets and a public subnet with NAT. The control plane is managed by AWS.
+A single NAT lowers the cost of the demo environment but creates a single point of failure for egress and cross-AZ traffic.
+Application: 2–4 pods, 500m CPU request, 1 CPU limit, a bounded inference queue and one worker per pod.
+HPA uses the Metrics Server add-on. **HPA does not add EC2 nodes**: the node group's max_size alone
+does not enable autoscaling. Overload returns 429; verify free capacity separately.
 
-## Что внутри
+## What's inside
 
-- `app/`, `tests/`, `Dockerfile`: JSON API, probes, Prometheus metrics, unit tests и real-model smoke в CI.
-- `terraform/`: VPC, EKS + managed addons, ECR, GitHub OIDC, разделённые build/deploy IAM roles.
-- `k8s/`: Deployment, Service, HPA, PDB, restricted namespace, ограниченный deploy Role.
-- `monitoring/`: Helm values, ServiceMonitor, alert rules и Grafana dashboard.
-- `.github/workflows/ci-cd.yaml`: PR checks → main build/smoke/push → gated deploy по digest.
-- `examples/gpu/`: отдельный opt-in GPU node group и CUDA workload.
+- `app/`, `tests/`, `Dockerfile`: JSON API, probes, Prometheus metrics, unit tests and a real-model smoke test in CI.
+- `terraform/`: VPC, EKS + managed add-ons, ECR, GitHub OIDC, separate build/deploy IAM roles.
+- `k8s/`: Deployment, Service, HPA, PDB, restricted namespace, a scoped deploy Role.
+- `monitoring/`: Helm values, ServiceMonitor, alert rules and a Grafana dashboard.
+- `.github/workflows/ci-cd.yaml`: PR checks → main build/smoke/push → gated deploy by digest.
+- `examples/gpu/`: a separate opt-in GPU node group and CUDA workload.
 
 ## Prerequisites
 
-AWS sandbox account с billing access и квотами EKS, EC2, Elastic IP, NAT; AWS CLI v2,
-Terraform >=1.10 <2, Docker с linux/amd64 build, Python 3.12, kubectl 1.35, Helm 3, Git, OpenSSL.
-Region по умолчанию `us-west-2`; EKS version 1.35. Перед apply проверьте доступность версии,
-AMI/addons и standard support в выбранном регионе.
-Нужна существующая IAM admin role для bootstrap (не ARN временной STS-сессии).
-Terraform выполняется человеком под role с правами создавать перечисленные ресурсы и IAM/pass-role.
-CI **не** получает Terraform/admin credentials. Войдите через AWS SSO/временные credentials.
+An AWS sandbox account with billing access and quotas for EKS, EC2, Elastic IP, NAT; AWS CLI v2,
+Terraform >=1.10 <2, Docker with linux/amd64 builds, Python 3.12, kubectl 1.35, Helm 3, Git, OpenSSL.
+Default region is `us-west-2`; EKS version 1.35. Before apply, check that the version,
+AMI/add-ons and standard support are available in your chosen region.
+You need an existing IAM admin role for bootstrap (not the ARN of a temporary STS session).
+Terraform is run by a human under a role allowed to create the listed resources and IAM/pass-role.
+CI does **not** get Terraform/admin credentials. Sign in via AWS SSO/temporary credentials.
 
-## 1. Проверить API локально
+## 1. Test the API locally
 
 ```bash
 python3.12 -m venv .venv
@@ -65,13 +65,13 @@ ruff check app tests scripts/download_model.py
 
 docker build --platform linux/amd64 -t hf-inference:local .
 docker run --rm --name hf-inference --read-only --tmpfs /tmp:rw,size=128m   -p 127.0.0.1:8000:8000 hf-inference:local
-# В другом терминале после готовности:
+# In another terminal, once it is ready:
 bash scripts/smoke.sh
 ```
 
-Первый build скачивает PyTorch и веса; нужен интернет и несколько GB свободного диска.
-Unit tests подменяют модель: настоящий download/inference проверяет Docker smoke, отдельно от них.
-Не запускайте `uvicorn` на хосте без загруженной модели: `/opt/model` создаётся в Docker build.
+The first build downloads PyTorch and the weights; it needs internet access and a few GB of free disk.
+Unit tests mock the model: the real download/inference is checked by the Docker smoke test, separately from them.
+Do not run `uvicorn` on the host without a downloaded model: `/opt/model` is created during the Docker build.
 
 ```bash
 curl -fsS http://127.0.0.1:8000/predict -H 'Content-Type: application/json'   -d '{"text":"This product is excellent"}'
@@ -79,19 +79,19 @@ curl -fsS http://127.0.0.1:8000/predict -H 'Content-Type: application/json'   -d
 ```
 
 `GET /health/live`, `GET /health/ready`, `GET /metrics/`, `POST /predict`.
-Длина текста 1–2000 символов; токенизация обрезает вход до 256 токенов.
-До восьми выполняемых/ожидающих запросов на pod, далее 429. Inference вынесен в отдельный поток,
-чтобы очередь модели не блокировала probes. Текст не записывается в application/access logs.
-Нет аутентификации, TLS и rate limit на периметре: базовый Service доступен только внутри кластера.
+Text length is 1–2000 characters; tokenization truncates input to 256 tokens.
+Up to eight running/queued requests per pod, then 429. Inference runs in a separate thread
+so the model queue does not block probes. Text is not written to application/access logs.
+There is no authentication, TLS or rate limiting at the edge: the base Service is reachable only inside the cluster.
 
-## 2. Создать AWS-инфраструктуру
+## 2. Create the AWS infrastructure
 
 ```bash
 aws sso login --profile YOUR_PROFILE
 export AWS_PROFILE=YOUR_PROFILE
 aws sts get-caller-identity
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-# Отредактируйте repository, admin_role_arn и свой реальный public IP/32.
+# Edit repository, admin_role_arn and your real public IP/32.
 terraform -chdir=terraform init
 terraform -chdir=terraform fmt -check -recursive
 terraform -chdir=terraform validate
@@ -105,16 +105,16 @@ kubectl get nodes
 kubectl top nodes
 ```
 
-`YOUR_ADMIN_ROLE_ARN` — та же role, что в tfvars; вызывающий principal должен иметь sts:AssumeRole.
-Если уже работаете именно под этой role, `--role-arn` можно опустить.
-GitHub OIDC provider единственный на аккаунт/URL: передайте `github_oidc_provider_arn`, если он уже есть.
-Без этого Terraform пытается создать новый provider.
-Terraform state хранит инфраструктурные данные и не должен попадать в Git. Для personal demo используется
-локальный state; сделайте защищённую резервную копию до cleanup. Для команды используйте S3 backend:
-[отдельная настройка](docs/SECURITY.md), шифрование, versioning и locking.
-`.terraform.lock.hcl` включён в поставку; проверяйте изменения lock file при обновлении зависимостей.
+`YOUR_ADMIN_ROLE_ARN` is the same role as in tfvars; the calling principal must have sts:AssumeRole.
+If you are already working under that exact role, `--role-arn` can be omitted.
+There is only one GitHub OIDC provider per account/URL: pass `github_oidc_provider_arn` if one already exists.
+Otherwise Terraform tries to create a new provider.
+Terraform state holds infrastructure data and must not end up in Git. The personal demo uses
+local state; make a secure backup before cleanup. For a team, use an S3 backend:
+[separate setup](docs/SECURITY.md), encryption, versioning and locking.
+`.terraform.lock.hcl` is included; review lock file changes when updating dependencies.
 
-## 3. Первая публикация образа и bootstrap
+## 3. First image push and bootstrap
 
 ```bash
 aws ecr get-login-password --region "$AWS_REGION" |   docker login --username AWS --password-stdin "${ECR_URL%%/*}"
@@ -127,35 +127,35 @@ bash scripts/bootstrap-app.sh
 bash scripts/install-monitoring.sh
 kubectl -n inference get deployment,hpa,pdb,service
 kubectl -n inference port-forward service/inference 8000:80
-# В другом терминале:
+# In another terminal:
 bash scripts/smoke.sh
 ```
 
-Образ разворачивается по digest. ECR immutable tags; повторная сборка использует новый tag.
-Bootstrap от администратора создаёт namespace, RBAC и manifests. CI обновляет только image,
-поэтому изменения YAML применяйте повторным bootstrap с проверенным IMAGE.
-Повторный bootstrap временно возвращает replicas=2; HPA затем продолжает управлять масштабом.
+The image is deployed by digest. ECR tags are immutable; a rebuild uses a new tag.
+The admin bootstrap creates the namespace, RBAC and manifests. CI updates only the image,
+so apply YAML changes by re-running bootstrap with a verified IMAGE.
+Re-running bootstrap temporarily resets replicas=2; HPA then continues to manage scaling.
 
 ## 4. Prometheus / Grafana
 
 ```bash
 kubectl -n monitoring port-forward service/monitoring-grafana 3000:80
-# Получить пароль в своей консоли (не добавлять в Git/скриншоты):
+# Get the password in your own console (do not add it to Git/screenshots):
 kubectl -n monitoring get secret grafana-admin   -o jsonpath='{.data.admin-password}' | base64 --decode
 ```
 
-Откройте http://localhost:3000, login `admin`, dashboard **HF EKS Inference**.
-Панели: RPS, P95 latency, errors, overload. Создайте трафик smoke-скриптом и подождите scrape/5m rate window.
-Метрики latency включают очередь принятого запроса; validation errors 422 не входят в inference counter.
-Alert rules доступны в Prometheus, Alertmanager/внешние уведомления не настроены.
-Prometheus retention 6h/2GB, storage ephemeral; Grafana также ephemeral, dashboard provisioned ConfigMap.
-При пересоздании monitoring pod история теряется. Для production нужны PVC/EBS CSI, backups,
-TLS/auth, alert routing, SLO и load test. EKS audit logs сохраняются в CloudWatch 7 дней.
+Open http://localhost:3000, login `admin`, dashboard **HF EKS Inference**.
+Panels: RPS, P95 latency, errors, overload. Generate traffic with the smoke script and wait for the scrape/5m rate window.
+Latency metrics include queueing time of accepted requests; 422 validation errors are not counted in the inference counter.
+Alert rules are available in Prometheus; Alertmanager/external notifications are not configured.
+Prometheus retention is 6h/2GB with ephemeral storage; Grafana is also ephemeral, the dashboard is provisioned via ConfigMap.
+History is lost when monitoring pods are recreated. Production needs PVC/EBS CSI, backups,
+TLS/auth, alert routing, SLOs and load testing. EKS audit logs are kept in CloudWatch for 7 days.
 
-## 5. GitHub Actions: OIDC и deploy
+## 5. GitHub Actions: OIDC and deploy
 
-Создайте собственный пустой GitHub repo и загрузите содержимое каталога (включая `.github/`).
-Например, из корня распакованного проекта:
+Create your own empty GitHub repo and push the contents of the directory (including `.github/`).
+For example, from the root of the unpacked project:
 
 ```bash
 git init -b main
@@ -165,12 +165,12 @@ git remote add origin https://github.com/KostanPROFF/hf-eks-portfolio.git
 git push -u origin main
 ```
 
-Сначала настройте variables/environment и runner, затем запускайте workflow.
-До настройки AWS variables workflow выполняет только проверки: build/deploy пропускаются.
-После настройки выполните Run workflow на main.
-В repository Actions variables внесите значения из `terraform output`:
+Configure the variables/environment and runner first, then run the workflow.
+Until the AWS variables are set, the workflow only runs checks: build/deploy are skipped.
+After configuring, use Run workflow on main.
+Add the values from `terraform output` as repository Actions variables:
 
-| Variable | Значение |
+| Variable | Value |
 |---|---|
 | `AWS_REGION` | `region` |
 | `CLUSTER_NAME` | `cluster_name` |
@@ -178,125 +178,125 @@ git push -u origin main
 | `BUILD_ROLE_ARN` | `build_role_arn` |
 | `DEPLOY_ROLE_ARN` | `deploy_role_arn` |
 
-Создайте Environment `production`: required reviewers, разрешена только protected branch `main`.
-Наличие required reviewers зависит от тарифа/visibility GitHub; настройте доступный вам gate до запуска.
-OIDC build trust привязан к exact repo/main; deploy trust — exact repo/environment production.
-Для environment subject ветка контролируется **GitHub Environment deployment branch rules**, не IAM sub.
-Уберите право обходить reviewers там, где это доступно; защитите main и workflow-файлы review.
-Статические AWS keys и HF token не нужны.
+Create a `production` Environment: required reviewers, only the protected `main` branch allowed.
+Availability of required reviewers depends on your GitHub plan/visibility; set up whatever gate you can before running.
+OIDC build trust is bound to the exact repo/main; deploy trust to the exact repo/environment production.
+For the environment subject, the branch is controlled by **GitHub Environment deployment branch rules**, not the IAM sub.
+Remove the ability to bypass reviewers where possible; protect main and workflow files with review.
+No static AWS keys or HF token are needed.
 
-Deploy job рассчитан на **self-hosted ephemeral Linux x64 runner** с labels `self-hosted,linux,x64,eks-vpc`,
-который вы регистрируете отдельно. Он не создаётся Terraform: регистрационный credential GitHub
-намеренно не передаётся в state. Установите на runner AWS CLI v2, kubectl 1.35, bash, Git;
-включите исходящий HTTPS к GitHub, AWS STS/EKS через NAT и DNS VPC.
-Разместите runner в private subnet; разрешите его security group входящий TCP/443 в cluster primary SG.
-Права инфраструктуры runner не должны включать EKS/ECR admin. Credentials приложение получает через OIDC job.
-Используйте одноразовый runner, ограниченный этим private/trusted repo, и не допускайте PR jobs на него.
-Для публичного repo используйте выделенный runner group с workflow restrictions либо изолированный
-одноразовый runner и строгий review main. [Сетевая проверка и эксплуатация](docs/OPERATIONS.md).
+The deploy job targets a **self-hosted ephemeral Linux x64 runner** with labels `self-hosted,linux,x64,eks-vpc`,
+which you register separately. It is not created by Terraform: the GitHub registration credential
+is intentionally kept out of state. Install AWS CLI v2, kubectl 1.35, bash and Git on the runner;
+allow outbound HTTPS to GitHub, AWS STS/EKS via NAT, and VPC DNS.
+Place the runner in a private subnet; allow inbound TCP/443 from its security group to the cluster primary SG.
+The runner's infrastructure permissions must not include EKS/ECR admin. The job gets credentials via OIDC.
+Use a single-use runner restricted to this private/trusted repo, and do not let PR jobs run on it.
+For a public repo, use a dedicated runner group with workflow restrictions, or an isolated
+single-use runner and strict review of main. [Network checks and operations](docs/OPERATIONS.md).
 
-PR запускает только тесты и validation на GitHub-hosted runner, без AWS credentials.
-Push main: tests → real-model Docker smoke → ECR push → production gate → patch Deployment → wait rollout.
-Если runner отсутствует, deploy job останется queued; сборка образа сама по себе не означает deploy.
-AWS API endpoint ограничен admin CIDR; GitHub-hosted build к нему не подключается.
-Deploy роль может только DescribeCluster и get/list/patch/watch одного Deployment; без Secrets/RBAC/admin прав.
-Это доверенный CD principal: patch Deployment позволяет менять pod spec, потому main/workflow review обязателен.
-CI не публикует Terraform и не выполняет terraform apply.
+A PR runs only tests and validation on a GitHub-hosted runner, with no AWS credentials.
+Push to main: tests → real-model Docker smoke → ECR push → production gate → patch Deployment → wait for rollout.
+If there is no runner, the deploy job stays queued; building the image by itself does not mean a deploy.
+The AWS API endpoint is restricted to the admin CIDR; the GitHub-hosted build does not connect to it.
+The deploy role can only DescribeCluster and get/list/patch/watch a single Deployment; no Secrets/RBAC/admin rights.
+It is a trusted CD principal: patching the Deployment allows changing the pod spec, so main/workflow review is mandatory.
+CI does not publish Terraform and does not run terraform apply.
 
-## 6. Внутренний LoadBalancer (опционально)
+## 6. Internal LoadBalancer (optional)
 
-Сначала установите `enable_load_balancer_controller = true`, выполните Terraform plan/apply:
+First set `enable_load_balancer_controller = true` and run Terraform plan/apply:
 
 ```bash
 export VPC_ID=$(terraform -chdir=terraform output -raw vpc_id)
 bash scripts/install-lb-controller.sh
-# IMAGE должен оставаться проверенным ECR digest из шага 3.
+# IMAGE must remain the verified ECR digest from step 3.
 OVERLAY=overlays/internal-nlb bash scripts/bootstrap-app.sh
 kubectl -n inference get service inference -w
 ```
 
-Используется AWS Load Balancer Controller 2.13.3, EKS Pod Identity и versioned upstream IAM policy.
-NLB internal, IP targets, source range VPC CIDR. HTTP доступен лишь из связанной сети VPC/VPN;
-для публичной демонстрации используйте port-forward. Это не TLS endpoint.
-Не меняйте class/scheme существующего LB на месте: удалите Service, дождитесь удаления AWS LB и создайте заново.
-Базовый ClusterIP можно заменить этим overlay; возврат с LB делайте также через удаление Service.
-Не удаляйте controller/IAM до удаления NLB: finalizer нужен для освобождения AWS ресурсов.
+Uses AWS Load Balancer Controller 2.13.3, EKS Pod Identity and the versioned upstream IAM policy.
+The NLB is internal, with IP targets and the VPC CIDR as source range. HTTP is reachable only from a network connected to the VPC/VPN;
+for a public demo, use port-forward. This is not a TLS endpoint.
+Do not change the class/scheme of an existing LB in place: delete the Service, wait for the AWS LB to be deleted, then recreate it.
+The base ClusterIP can be replaced by this overlay; to go back from the LB, also delete the Service.
+Do not remove the controller/IAM before the NLB is deleted: the finalizer is needed to release AWS resources.
 
-## Стоимость и ограничения
+## Cost and limitations
 
-Оценка для us-west-2, USD, 730 часов/месяц, без налогов/кредитов/скидок; это бюджет стенда,
-а не актуальная коммерческая котировка. EKS standard support: $0.10/час ≈ **$73/месяц**;
-extended support $0.60/час ≈ $438. Проверено по [AWS EKS pricing](https://aws.amazon.com/eks/pricing/).
-[Срок поддержки версий](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html).
+Estimate for us-west-2, USD, 730 hours/month, excluding taxes/credits/discounts; this is a demo environment budget,
+not a current commercial quote. EKS standard support: $0.10/hour ≈ **$73/month**;
+extended support $0.60/hour ≈ $438. Checked against [AWS EKS pricing](https://aws.amazon.com/eks/pricing/).
+[Version support lifecycle](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html).
 
-| Компонент | Ориентир бюджета / месяц |
+| Component | Budget estimate / month |
 |---|---:|
 | EKS standard control plane | $73 |
 | 2 × t3.large On-Demand | $120–150 |
-| Один NAT + его public IPv4, без трафика | $35–45 |
-| Диски нод, ECR, CloudWatch | $10–30 |
-| Базовый стенд суммарно | **примерно $240–300** |
-| Optional NLB, плюс capacity/traffic | ещё $17–30+ |
-| Optional g4dn.xlarge, 24/7 | ещё $380–500+ |
-| Отдельный CI runner | отдельно, зависит от размещения |
+| Single NAT + its public IPv4, no traffic | $35–45 |
+| Node disks, ECR, CloudWatch | $10–30 |
+| Base environment total | **roughly $240–300** |
+| Optional NLB, plus capacity/traffic | another $17–30+ |
+| Optional g4dn.xlarge, 24/7 | another $380–500+ |
+| Separate CI runner | extra, depends on hosting |
 
-Диапазоны для EC2/NAT/storage — плановые допущения, не выгруженные тарифы.
-До apply пересчитайте выбранные instance type/region/GB в [AWS Pricing Calculator](https://calculator.aws/).
-Дополнительно: NAT processing, egress, cross-AZ data, ECR transfer/storage, public IPv4, T3 surplus credits,
-CloudWatch ingestion и стоимость runner. На малом трафике T3 burstable подходит демонстрации,
-при постоянном CPU inference сравните M/C instances. Поставьте AWS Budget alert заранее.
-Не обещайте SLA/latency и экономию без измерений. Terraform destroy удаляет стенд, остановка pod не останавливает биллинг EKS/NAT.
+The EC2/NAT/storage ranges are planning assumptions, not exported price lists.
+Before apply, recalculate your chosen instance type/region/GB in the [AWS Pricing Calculator](https://calculator.aws/).
+Additional costs: NAT processing, egress, cross-AZ data, ECR transfer/storage, public IPv4, T3 surplus credits,
+CloudWatch ingestion and the runner. At low traffic, burstable T3 is fine for a demo;
+for sustained CPU inference, compare M/C instances. Set up an AWS Budget alert in advance.
+Do not promise SLAs/latency or savings without measurements. Terraform destroy removes the environment; stopping pods does not stop EKS/NAT billing.
 
-## Cleanup — порядок важен
+## Cleanup — order matters
 
-Остановите/отключите workflow и runner, сохраните доказательства, если нужны для портфолио.
-Сначала удалите Kubernetes-ресурсы с AWS finalizers, пока cluster/controller/IAM работают:
+Stop/disable the workflow and runner, and save any evidence you need for your portfolio.
+First delete Kubernetes resources with AWS finalizers while the cluster/controller/IAM still work:
 
 ```bash
 kubectl -n inference delete service inference --ignore-not-found
-# Если был NLB: дождитесь его удаления в AWS EC2 Load Balancers и связанных target groups/ENI.
+# If you had an NLB: wait until it is deleted in AWS EC2 Load Balancers along with its target groups/ENIs.
 kubectl delete namespace inference --ignore-not-found
 helm uninstall monitoring -n monitoring
 kubectl delete namespace monitoring --ignore-not-found
-# Если был установлен:
+# If installed:
 helm uninstall aws-load-balancer-controller -n kube-system
-# Если был GPU plugin:
+# If you had the GPU plugin:
 helm uninstall nvdp -n gpu-system
 kubectl delete namespace gpu-system --ignore-not-found
 ```
 
-Команды `helm uninstall` для неустановленных releases пропустите. Удаление monitoring namespace удалит
-его secrets/data; CRD Helm может сохранить до удаления EKS, что нормально для disposable cluster.
-ECR защищён `force_delete=false`: сначала осознанно очистите **только repository этого стенда**,
-после остановки CI. Команды ниже необратимо удаляют его образы:
+Skip `helm uninstall` for releases that were not installed. Deleting the monitoring namespace removes
+its secrets/data; Helm CRDs may remain until EKS is deleted, which is fine for a disposable cluster.
+ECR is protected by `force_delete=false`: first deliberately empty **only this environment's repository**,
+after stopping CI. The commands below irreversibly delete its images:
 
 ```bash
 export ECR_REPOSITORY="${ECR_URL#*/}"
 aws ecr list-images --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY"   --query 'imageIds' --output json > /tmp/hf-eks-image-ids.json
-# Для небольшого demo repo (<100 image IDs); при большем количестве удаляйте batches <=100.
-# Если JSON пустой [], batch-delete пропустите.
+# For a small demo repo (<100 image IDs); with more, delete in batches of <=100.
+# If the JSON is empty [], skip batch-delete.
 aws ecr batch-delete-image --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY"   --image-ids file:///tmp/hf-eks-image-ids.json
 terraform -chdir=terraform plan -destroy -out=cleanup.tfplan
 terraform -chdir=terraform apply cleanup.tfplan
 ```
 
-Проверьте EC2 instances, NAT Gateway/EIP, NLB/target groups, ECR, CloudWatch log groups и volumes по Project tag.
-Удалите отдельно созданный runner, его регистрацию, и при необходимости внешние backend bucket/state backups
-только после успешного destroy. Existing GitHub OIDC provider переданный ARN не удаляется этим проектом.
-Если controller finalizer завис, восстановите controller/IAM и проверьте логи; не снимайте finalizer вслепую.
+Check EC2 instances, NAT Gateway/EIP, NLB/target groups, ECR, CloudWatch log groups and volumes by the Project tag.
+Remove the separately created runner and its registration, and, if needed, external backend buckets/state backups,
+only after a successful destroy. An existing GitHub OIDC provider passed by ARN is not deleted by this project.
+If a controller finalizer hangs, restore the controller/IAM and check the logs; do not remove the finalizer blindly.
 
-## Как представить в портфолио
+## How to present it in a portfolio
 
-Добавьте собственные скриншоты успешного GitHub Actions run, `kubectl get pods/hpa`, Grafana и JSON prediction.
-Сохраните дату, region, image digest, число запросов и измеренные latency/RPS. Результаты не включены
-автоматически: этот репозиторий не доказывает выполненный AWS deploy.
+Add your own screenshots of a successful GitHub Actions run, `kubectl get pods/hpa`, Grafana and a JSON prediction.
+Record the date, region, image digest, number of requests and measured latency/RPS. Results are not included
+automatically: this repository does not prove that an AWS deploy was performed.
 
-После реального запуска можно использовать формулировку в резюме:
-«Развернул CPU inference API Hugging Face на AWS EKS; описал VPC/EKS/ECR в Terraform,
-настроил GitHub Actions с OIDC и разделением IAM/RBAC, HPA и мониторинг Prometheus/Grafana».
-Указывайте реальные метрики и расходы; не добавляйте production experience/SLA без оснований.
+After a real run, you can use this wording in a résumé:
+"Deployed a Hugging Face CPU inference API on AWS EKS; defined VPC/EKS/ECR in Terraform,
+set up GitHub Actions with OIDC and separated IAM/RBAC, HPA and Prometheus/Grafana monitoring."
+Quote real metrics and costs; do not claim production experience/SLAs without grounds.
 
-## Источники и обновления
+## Sources and updates
 
 - [EKS access entries](https://docs.aws.amazon.com/eks/latest/userguide/access-entries.html)
 - [EKS network load balancing](https://docs.aws.amazon.com/eks/latest/userguide/network-load-balancing.html)
@@ -304,7 +304,7 @@ terraform -chdir=terraform apply cleanup.tfplan
 - [GitHub OIDC on AWS](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
 - [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html)
 
-Модули/charts/model revision закреплены. Actions закреплены commit SHA, Dependabot настроен для обновлений. Docker base tags требуют регулярного обновления;
-для строгой supply chain закрепите проверенные base image digests, введите SBOM/signing и vulnerability gate.
-ECR scan-on-push включён, но его наличие само по себе не блокирует deploy уязвимого образа.
-Код проекта MIT; модель и сторонние компоненты сохраняют собственные лицензии.
+Modules/charts/model revision are pinned. Actions are pinned by commit SHA; Dependabot is configured for updates. Docker base tags need regular updates;
+for a strict supply chain, pin verified base image digests and add SBOM/signing and a vulnerability gate.
+ECR scan-on-push is enabled, but by itself it does not block deploying a vulnerable image.
+Project code is MIT; the model and third-party components keep their own licenses.
